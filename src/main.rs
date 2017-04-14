@@ -1,8 +1,9 @@
 #[macro_use]
+extern crate ears;
+#[macro_use]
 extern crate glium;
 mod game;
 mod graphics;
-
 use std::time::SystemTime;
 use glium::DisplayBuild;
 

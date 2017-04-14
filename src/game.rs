@@ -1,4 +1,6 @@
 extern crate glium;
+extern crate ears;
+use ears::{Sound, AudioController};
 
 const BOARD_WIDTH: f32 = 600.;
 const BOARD_HEIGHT: f32 = 300.;
@@ -11,12 +13,15 @@ const BALL_SPEEDUP: f32 = 1.1;
 const BALL_START_SPEED: f32 = 250.;
 const PADDLE_MAX_SPEED: f32 = 500.;
 const PADDLE_FRICTION: f32 = 0.005;
-const PADDLE_BALL_INFLUENCE: f32 = 0.5;
-const PADDLE_CURVE: f32 = 0.1;
+const PADDLE_BALL_INFLUENCE: f32 = 0.25;
+const PADDLE_CURVE: f32 = 0.2;
 const PLAYER_PADDLE_ACCEL: f32 = 2000.;
-const AI_PADDLE_P_FACTOR: f32 = 120.;
-const AI_PADDLE_I_FACTOR: f32 = 0.5;
+const AI_PADDLE_P_FACTOR: f32 = 30.;
+const AI_PADDLE_I_FACTOR: f32 = 0.1;
 const AI_PADDLE_D_FACTOR: f32 = 10.;
+const BEEP_PATH: &'static str = "sounds/beep.wav";
+const TICK_PATH: &'static str = "sounds/tick.wav";
+const ERROR_PATH: &'static str = "sounds/error.wav";
 
 const WIN_SCORE: u32 = 10;
 
@@ -71,6 +76,9 @@ pub struct Board {
     override_ball_sim: bool,
     ai_last_offset: f32,
     ai_accum_offset: f32,
+    beep_snd: Sound,
+    tick_snd: Sound,
+    error_snd: Sound
 }
 
 fn collides(sx: f32, sy: f32, sdx: f32, sdy: f32, tx: f32, ty: f32, tdx: f32, tdy: f32) -> (f32, f32) {
@@ -124,6 +132,9 @@ impl Board {
             override_ball_sim: false,
             ai_last_offset: 0.,
             ai_accum_offset: 0.,
+            beep_snd: Sound::new(BEEP_PATH).expect("Failed to load beep sound."),
+            tick_snd: Sound::new(TICK_PATH).expect("Failed to load tick sound."),
+            error_snd: Sound::new(ERROR_PATH).expect("Failed to load error sound.")
         }
     }
 
@@ -189,6 +200,7 @@ impl Board {
         let rhs_reflect_fn = |ct: f32, ball: &Ball| { paddle_reflect(-1., rhs_paddle_dy, ct, ball) };
         let mut hit_paddle_lhs = false;
         let mut hit_paddle_rhs = false;
+        let mut hit_any = false;
         {
             let mut lhs_callback_fn = || { hit_paddle_lhs = true; };
             let mut rhs_callback_fn = || { hit_paddle_rhs = true; };
@@ -218,6 +230,7 @@ impl Board {
                     let (cs, ct) = collides(self.ball.bound.x + BALL_RADIUS, self.ball.bound.y + BALL_RADIUS, iter_dx, iter_dy, tx, ty, tdx, tdy);
                     if 0. < cs && cs <= 1. && 0. < ct && ct <= 1. {
                         has_collide = true;
+                        hit_any = true;
                         self.ball.bound.x += iter_dx * (cs - 0.001);
                         self.ball.bound.y += iter_dy * (cs - 0.001);
                         let (dx, dy) = if let &Normal::Dynamic(_, _, reflect_fn) = normal {
@@ -243,11 +256,18 @@ impl Board {
             self.ball.bound.x += self.ball.dx * dt_left;
             self.ball.bound.y += self.ball.dy * dt_left;
         }
+        if hit_paddle_lhs || hit_paddle_rhs {
+            self.beep_snd.play();
+        } else if hit_any {
+            self.tick_snd.play();
+        }
         if self.ball.bound.x < 0. {
             self.rhs_score += 1;
+            self.error_snd.play();
             self.start_game(true);
         } else if self.ball.bound.x > self.width {
             self.lhs_score += 1;
+            self.error_snd.play();
             self.start_game(false);
         }
     }
