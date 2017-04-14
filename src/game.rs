@@ -6,19 +6,23 @@ const BOARD_WIDTH: f32 = 600.;
 const BOARD_HEIGHT: f32 = 300.;
 const PADDLE_X_OFFSET: f32 = 10.;
 const PADDLE_WIDTH: f32 = 10.;
-const PADDLE_HEIGHT: f32 = 75.;
+const PADDLE_HEIGHT: f32 = 60.;
 const GOAL_HEIGHT: f32 = 240.;
 const BALL_RADIUS: f32 = 5.;
-const BALL_SPEEDUP: f32 = 1.1;
-const BALL_START_SPEED: f32 = 250.;
+const BALL_MAX_SPEED: f32 = 800.;
+const BALL_MAX_SLOPE: f32 = 1.;
+const BALL_SPEEDUP: f32 = 1.05;
+const BALL_START_SPEED: f32 = 300.;
 const PADDLE_MAX_SPEED: f32 = 500.;
 const PADDLE_FRICTION: f32 = 0.005;
-const PADDLE_BALL_INFLUENCE: f32 = 0.25;
-const PADDLE_CURVE: f32 = 0.2;
+const PADDLE_BALL_INFLUENCE: f32 = 0.3;
+const PADDLE_CURVE: f32 = 0.5;
 const PLAYER_PADDLE_ACCEL: f32 = 2000.;
-const AI_PADDLE_P_FACTOR: f32 = 30.;
+const HIT_DELAY: f32 = 0.05;
+const AI_PADDLE_P_FACTOR: f32 = 40.;
 const AI_PADDLE_I_FACTOR: f32 = 0.1;
-const AI_PADDLE_D_FACTOR: f32 = 10.;
+const AI_PADDLE_D_FACTOR: f32 = 2.;
+const AI_PADDLE_MAX_ACCEL: f32 = 1800.;
 const BEEP_PATH: &'static str = "sounds/beep.wav";
 const TICK_PATH: &'static str = "sounds/tick.wav";
 const ERROR_PATH: &'static str = "sounds/error.wav";
@@ -57,9 +61,17 @@ pub struct Ball {
 }
 
 impl Ball {
-    pub fn speedup(&mut self, amount: f32) {
-        self.dx *= amount; 
-        self.dy *= amount; 
+    pub fn set_speed(&mut self, dx: f32, dy: f32) {
+        let mut mag = (dx * dx + dy * dy).sqrt();
+        let mut slope = dy / dx;
+        if mag > BALL_MAX_SPEED {
+            mag = BALL_MAX_SPEED;
+        }
+        if slope.abs() > BALL_MAX_SLOPE {
+            slope = slope.signum() * BALL_MAX_SLOPE;
+        }
+        self.dx = dx.signum() * mag / (1. + slope * slope).sqrt();
+        self.dy = dx.signum() * mag * slope / (1. + slope * slope).sqrt();
     }
 }
 
@@ -73,6 +85,7 @@ pub struct Board {
     pub lhs_paddle: Paddle,
     pub rhs_paddle: Paddle,
     pub ball: Ball,
+    delay: f32,
     override_ball_sim: bool,
     ai_last_offset: f32,
     ai_accum_offset: f32,
@@ -83,10 +96,11 @@ pub struct Board {
 
 fn collides(sx: f32, sy: f32, sdx: f32, sdy: f32, tx: f32, ty: f32, tdx: f32, tdy: f32) -> (f32, f32) {
     let (stdx, stdy) = (sx - tx, sy - ty);
-    let ct = (tdx * stdx + tdy * stdy) / (tdx * tdx + tdy * tdy);
-    let nx = (tx + ct * tdx) - sx;
-    let ny = (ty + ct * tdy) - sy;
-    let cs = (nx * nx + ny * ny) /  (nx * sdx + ny * sdy);
+    let cn = (tdx * stdx + tdy * stdy) / (tdx * tdx + tdy * tdy);
+    let (nx, ny) = (tx + cn * tdx - sx, ty + cn * tdy - sy);
+    let cs = (nx * nx + ny * ny) / (nx * sdx + ny * sdy);
+    let (px, py) = (sx + cs * sdx - tx, sy + cs * sdy - ty);
+    let ct = (px * tdx + py * tdy) / (tdx * tdx + tdy * tdy);
     (cs, ct)
 }
 
@@ -129,6 +143,7 @@ impl Board {
                 dx: 0.,
                 dy: 0.
             },
+            delay: 0.,
             override_ball_sim: false,
             ai_last_offset: 0.,
             ai_accum_offset: 0.,
@@ -144,19 +159,35 @@ impl Board {
         else { None }
     }
 
-    pub fn update(&mut self, dt: f32) {
+    pub fn update(&mut self, mut dt: f32) {
+        if self.delay >= dt {
+            self.delay -= dt;
+            return;
+        }
+        dt -= self.delay;
+        self.delay = 0.;
         // ai sim
-        let paddle_offset = (self.ball.bound.y + self.ball.bound.height / 2.) - (self.rhs_paddle.bound.y + self.rhs_paddle.bound.height / 2.);
-        if self.ai_accum_offset.signum() != paddle_offset.signum() {
+        let target = if self.ball.dx > 0. {
+            self.ball.bound.y + self.ball.bound.height / 2.
+        } else {
+            self.height / 2.
+        };
+        let target_offset = target - (self.rhs_paddle.bound.y + self.rhs_paddle.bound.height / 2.);
+        if self.ai_accum_offset.signum() != target_offset.signum() {
             self.ai_accum_offset = 0.;
         } else {
-            self.ai_accum_offset += paddle_offset;
+            self.ai_accum_offset += target_offset;
         }
-        let p = paddle_offset;
+        let p = target_offset;
         let i = self.ai_accum_offset;
         let d = (p - self.ai_last_offset) / dt;
-        self.ai_last_offset = p;
-        self.rhs_paddle.ddy = AI_PADDLE_P_FACTOR * p + AI_PADDLE_I_FACTOR * i + AI_PADDLE_D_FACTOR * d;
+        self.ai_last_offset = target_offset;
+        let ddy_diff = AI_PADDLE_P_FACTOR * p + AI_PADDLE_I_FACTOR * i + AI_PADDLE_D_FACTOR * d - self.rhs_paddle.ddy;
+        if ddy_diff.abs() > AI_PADDLE_MAX_ACCEL {
+            self.rhs_paddle.ddy += ddy_diff.signum() * AI_PADDLE_MAX_ACCEL;
+        } else {
+            self.rhs_paddle.ddy += ddy_diff;
+        }
         // paddle sim
         for ref mut paddle in [&mut self.lhs_paddle, &mut self.rhs_paddle].iter_mut() {
             paddle.dy += dt * paddle.ddy;
@@ -178,7 +209,6 @@ impl Board {
         let mut iterations = 0;
         let mut has_collide = true;
         let mut dt_left = dt;
-
         let lhs_goal_border_height = (self.height - self.lhs_goal_height) / 2.;
         let rhs_goal_border_height = (self.height - self.rhs_goal_height) / 2.;
         enum Normal<'a> {
@@ -191,8 +221,8 @@ impl Board {
         }
         fn paddle_reflect(nx: f32, paddle_dy: f32, ct: f32, ball: &Ball) -> (f32, f32) {
            let ny = (2. * ct - 1.) * PADDLE_CURVE;
-           let (dx, dy) = reflect(ball.dx, ball.dy, nx, ny);
-           (dx, dy + paddle_dy * PADDLE_BALL_INFLUENCE)
+           let (dx, dy) = reflect(ball.dx.signum() * (ball.dx * ball.dx + ball.dy * ball.dy).sqrt(), paddle_dy * PADDLE_BALL_INFLUENCE, nx, ny);
+           (BALL_SPEEDUP * dx, BALL_SPEEDUP * dy)
         }
         let lhs_paddle_dy = self.lhs_paddle.dy;
         let rhs_paddle_dy = self.rhs_paddle.dy;
@@ -204,42 +234,45 @@ impl Board {
         {
             let mut lhs_callback_fn = || { hit_paddle_lhs = true; };
             let mut rhs_callback_fn = || { hit_paddle_rhs = true; };
-            let mut basic_colliders: [(f32, f32, f32, f32, Normal, Option<&mut FnMut()>); 8] = [
-                (0., BALL_RADIUS, self.width, 0., Normal::Static(0., 1.), None),
-                (0., self.height - BALL_RADIUS, self.width, 0., Normal::Static(0., -1.), None),
-                (BALL_RADIUS, 0., 0., lhs_goal_border_height, Normal::Static(1., 0.), None),
-                (BALL_RADIUS, self.height, 0., -lhs_goal_border_height, Normal::Static(1., 0.), None),
-                (self.width - BALL_RADIUS, 0., 0., lhs_goal_border_height, Normal::Static(-1., 0.), None),
-                (self.width - BALL_RADIUS, self.height, 0., -rhs_goal_border_height, Normal::Static(-1., 0.), None),
-                (self.lhs_paddle.bound.x + self.lhs_paddle.bound.width + BALL_RADIUS, self.lhs_paddle.bound.y, 0., self.lhs_paddle.bound.height, 
-                    Normal::Dynamic(1., 0., &lhs_reflect_fn), Some(&mut lhs_callback_fn)),
-                (self.rhs_paddle.bound.x - BALL_RADIUS, self.rhs_paddle.bound.y, 0., self.rhs_paddle.bound.height, 
-                    Normal::Dynamic(-1., 0., &rhs_reflect_fn), Some(&mut rhs_callback_fn)),
+            let mut colliders: [(f32, f32, f32, f32, Normal, Option<&mut FnMut()>, bool); 8] = [
+                (0., BALL_RADIUS, self.width, 0., Normal::Static(0., 1.), None, false),
+                (0., self.height - BALL_RADIUS, self.width, 0., Normal::Static(0., -1.), None, false),
+                (BALL_RADIUS, 0., 0., lhs_goal_border_height, Normal::Static(1., 0.), None, false),
+                (BALL_RADIUS, self.height, 0., -lhs_goal_border_height, Normal::Static(1., 0.), None, false),
+                (self.width - BALL_RADIUS, 0., 0., lhs_goal_border_height, Normal::Static(-1., 0.), None, false),
+                (self.width - BALL_RADIUS, self.height, 0., -rhs_goal_border_height, Normal::Static(-1., 0.), None, false),
+                (self.lhs_paddle.bound.x + self.lhs_paddle.bound.width + BALL_RADIUS, self.lhs_paddle.bound.y - BALL_RADIUS, 0., self.lhs_paddle.bound.height + 2. * BALL_RADIUS, 
+                    Normal::Dynamic(1., 0., &lhs_reflect_fn), Some(&mut lhs_callback_fn), true),
+                (self.rhs_paddle.bound.x - BALL_RADIUS, self.rhs_paddle.bound.y - BALL_RADIUS, 0., self.rhs_paddle.bound.height + 2. * BALL_RADIUS, 
+                    Normal::Dynamic(-1., 0., &rhs_reflect_fn), Some(&mut rhs_callback_fn), true),
             ];
-            while dt_left > 0. && has_collide && iterations < MAX_ITERATIONS {
+            let mut kill_early = false;
+            while dt_left > 0. && has_collide && iterations < MAX_ITERATIONS && !kill_early {
                 iterations += 1;
                 has_collide = false;
                 let iter_dx = self.ball.dx * dt_left;
                 let iter_dy = self.ball.dy * dt_left;
-                for &mut (tx, ty, tdx, tdy, ref normal, ref mut callback) in basic_colliders.iter_mut() {
+                for &mut (tx, ty, tdx, tdy, ref normal, ref mut callback, early) in colliders.iter_mut() {
                     let (nx, ny) = match normal {
                         &Normal::Static(x, y) => (x, y),
                         &Normal::Dynamic(x, y, _) => (x, y)
                     };
                     if nx * self.ball.dx + ny * self.ball.dy >= 0. { continue; }
-                    let (cs, ct) = collides(self.ball.bound.x + BALL_RADIUS, self.ball.bound.y + BALL_RADIUS, iter_dx, iter_dy, tx, ty, tdx, tdy);
+                    let (cs, ct) = collides(
+                        self.ball.bound.x + BALL_RADIUS, self.ball.bound.y + BALL_RADIUS, iter_dx, iter_dy,
+                        tx, ty, tdx, tdy);
                     if 0. < cs && cs <= 1. && 0. < ct && ct <= 1. {
+                        self.ball.bound.x += iter_dx * cs;
+                        self.ball.bound.y += iter_dy * cs;
                         has_collide = true;
                         hit_any = true;
-                        self.ball.bound.x += iter_dx * (cs - 0.001);
-                        self.ball.bound.y += iter_dy * (cs - 0.001);
+                        if early { kill_early = true; }
                         let (dx, dy) = if let &Normal::Dynamic(_, _, reflect_fn) = normal {
                             reflect_fn(ct, &self.ball)
                         } else {
                             reflect(self.ball.dx, self.ball.dy, nx, ny)
                         };
-                        self.ball.dx = dx;
-                        self.ball.dy = dy;
+                        self.ball.set_speed(dx, dy);
                         dt_left *= 1. - cs;
                         if let &mut Some(ref mut callback_fn) = callback {
                             callback_fn();
@@ -251,10 +284,15 @@ impl Board {
         }
         if !self.override_ball_sim {
             if hit_paddle_lhs || hit_paddle_rhs {
-                self.ball.speedup(BALL_SPEEDUP);
+                self.delay = HIT_DELAY;
             }
-            self.ball.bound.x += self.ball.dx * dt_left;
-            self.ball.bound.y += self.ball.dy * dt_left;
+            if dt_left < self.delay {
+                self.delay = HIT_DELAY - dt_left;
+            } else {
+                self.ball.bound.x += self.ball.dx * (dt_left - self.delay);
+                self.ball.bound.y += self.ball.dy * (dt_left - self.delay);
+                self.delay = 0.;
+            }
         }
         if hit_paddle_lhs || hit_paddle_rhs {
             self.beep_snd.play();
@@ -281,6 +319,7 @@ impl Board {
         self.rhs_paddle.bound.y = BOARD_HEIGHT / 2. - PADDLE_HEIGHT / 2.;
         self.rhs_paddle.dy = 0.;
         self.rhs_paddle.ddy = 0.;
+        self.delay = 0.;
         self.ball.bound.x = BOARD_WIDTH / 2. - BALL_RADIUS;
         self.ball.bound.y = BOARD_HEIGHT / 2. - BALL_RADIUS;
         self.ball.dx = if lhs_start { -BALL_START_SPEED } else { BALL_START_SPEED };
