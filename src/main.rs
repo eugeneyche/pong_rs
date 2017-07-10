@@ -1,4 +1,3 @@
-#[macro_use]
 extern crate ears;
 #[macro_use]
 extern crate glium;
@@ -9,7 +8,6 @@ use glium::DisplayBuild;
 
 fn main() {
     const BOARD_PADDING: u32 = 10;
-
     let mut board = game::Board::new();
     let width = board.width as u32 + 2 * BOARD_PADDING;
     let height = board.height as u32 + 2 * BOARD_PADDING;

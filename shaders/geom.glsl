@@ -1,6 +1,7 @@
 #version 330 core
+
 layout (points) in;
-layout (triangle_strip, max_vertices=6) out;
+layout (triangle_strip, max_vertices=4) out;
 
 in VS_OUT {
     vec2 dimension;
@@ -12,14 +13,9 @@ void main() {
 
     gl_Position = gl_in[0].gl_Position;
     EmitVertex();
-    gl_Position = gl_in[0].gl_Position + x_offset;
-    EmitVertex();
-    gl_Position = gl_in[0].gl_Position + x_offset + y_offset;
-    EmitVertex();
-
-    gl_Position = gl_in[0].gl_Position;
-    EmitVertex();
     gl_Position = gl_in[0].gl_Position + y_offset;
+    EmitVertex();
+    gl_Position = gl_in[0].gl_Position + x_offset;
     EmitVertex();
     gl_Position = gl_in[0].gl_Position + x_offset + y_offset;
     EmitVertex();
